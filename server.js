@@ -42,7 +42,6 @@ let users = [
   }
 ];
 
-// Helper: Find user or auto-create if missing to prevent 404 errors
 const findOrCreateUser = (userId, email, fullName) => {
   let user = users.find(u => u.id === userId || (email && u.email && u.email.toLowerCase() === email.toLowerCase()));
   if (!user) {
@@ -99,21 +98,19 @@ app.get('/api/admin/users', (req, res) => {
   res.json({ success: true, users });
 });
 
-// INSTANT GRANT / APPROVAL ROUTE (Bulletproofed against 404s)
 app.post('/api/admin/grant-tier', (req, res) => {
   const { userId, email, fullName, plan, adminEmail } = req.body; 
   if (!adminEmail || adminEmail.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
     return res.status(403).json({ error: 'Unauthorized.' });
   }
 
-  // Automatically finds or provisions the user so it never fails with 404
   const user = findOrCreateUser(userId, email, fullName);
 
   user.tier = plan; // 'vecto1' or 'vecto2'
   user.activeCode = `INSTANT-GRANT-${plan.toUpperCase()}`;
   
   const expiresAt = new Date();
-  expiresAt.setMonth(expiresAt.getMonth() + 1); // Valid for 1 month
+  expiresAt.setMonth(expiresAt.getMonth() + 1);
   user.codeExpiresAt = expiresAt;
   user.pendingCode = null;
   if (user.paymentProof) {
@@ -139,38 +136,23 @@ app.post('/api/admin/disconnect-mt5', (req, res) => {
   res.json({ success: true, message: 'MT5 account unlinked successfully.', user });
 });
 
-app.post('/api/admin/toggle-status', (req, res) => {
-  const { userId, status, adminEmail } = req.body;
-  if (!adminEmail || adminEmail.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
-    return res.status(403).json({ error: 'Unauthorized.' });
-  }
-
-  const user = users.find(u => u.id === userId);
-  if (!user) return res.status(404).json({ error: 'User not found.' });
-
-  user.status = status; 
-  res.json({ success: true, user });
-});
-
-app.delete('/api/admin/delete-user/:id', (req, res) => {
-  const adminEmail = req.query.adminEmail || req.headers['x-user-email'];
-  if (!adminEmail || adminEmail.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
-    return res.status(403).json({ error: 'Unauthorized.' });
-  }
-
-  const index = users.findIndex(u => u.id === req.params.id);
-  if (index === -1) return res.status(404).json({ error: 'User not found.' });
-
-  users.splice(index, 1);
-  res.json({ success: true, message: 'User account permanently deleted.' });
-});
-
 // ==========================================
-// 3. TRADING & METAAPI ENGINE
+// 3. TRADING & METAAPI ENGINE (Fixed SDK Calls)
 // ==========================================
 async function getOrCreateAccount(login, password, server, name) {
   const accountApi = api.metatraderAccountApi;
-  const accounts = await accountApi.getAccounts();
+  // Use safe pagination fallback to retrieve accounts list
+  let accounts = [];
+  try {
+    if (typeof accountApi.getAccounts === 'function') {
+      accounts = await accountApi.getAccounts();
+    } else if (typeof accountApi.getAccountsWithInfiniteScrollPagination === 'function') {
+      accounts = await accountApi.getAccountsWithInfiniteScrollPagination({ limit: 100 });
+    }
+  } catch (e) {
+    console.log('Account fetch warning:', e.message);
+  }
+
   let account = accounts.find(a => String(a.login) === String(login) && a.server === server);
 
   if (!account) {
