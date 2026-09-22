@@ -19,14 +19,14 @@ app.use((req, res, next) => {
 const token = process.env.META_API_TOKEN;
 const api = new MetaApi(token);
 
-// Admin email configuration (Set your email here)
-const ADMIN_EMAIL = 'admin@vector.ai'; 
+// Your exact Admin Email
+const ADMIN_EMAIL = 'henrymvungi20@gmail.com'; 
 
 const users = [
   {
     id: 'usr_demo_1',
     fullName: 'Henry Mvungi',
-    email: 'admin@vector.ai',
+    email: 'henrymvungi20@gmail.com',
     phoneNumber: '+255000000000',
     country: 'Tanzania',
     tier: 'vecto2',
@@ -44,7 +44,7 @@ app.get('/', (req, res) => {
 });
 
 // ==========================================
-// 1. AUTHENTICATION & SIGN-UP (Real User Data)
+// 1. AUTHENTICATION & SIGN-UP
 // ==========================================
 app.post('/api/auth/signup', (req, res) => {
   const { fullName, email, phoneNumber, country } = req.body;
@@ -52,7 +52,7 @@ app.post('/api/auth/signup', (req, res) => {
     return res.status(400).json({ error: 'All fields are required.' });
   }
 
-  let user = users.find(u => u.email === email);
+  let user = users.find(u => u.email.toLowerCase() === email.toLowerCase());
   if (!user) {
     user = {
       id: `usr_${Date.now()}`,
@@ -69,14 +69,12 @@ app.post('/api/auth/signup', (req, res) => {
     users.push(user);
   }
 
-  // Check if this user is the admin
   const isAdmin = email.toLowerCase() === ADMIN_EMAIL.toLowerCase();
-
   res.json({ success: true, user, isAdmin });
 });
 
 // ==========================================
-// 2. ADMIN ENDPOINTS (Restricted Security)
+// 2. ADMIN ENDPOINTS (Strictly Locked to You)
 // ==========================================
 app.get('/api/admin/users', (req, res) => {
   const requesterEmail = req.query.email || req.headers['x-user-email'];
@@ -99,7 +97,7 @@ app.post('/api/admin/disconnect-mt5', (req, res) => {
   user.mt5Locked = false;
   user.mt5Account = null;
 
-  res.json({ success: true, message: 'MT5 account unlinked successfully. User can now bind a new account.', user });
+  res.json({ success: true, message: 'MT5 account unlinked successfully.', user });
 });
 
 app.post('/api/admin/toggle-status', (req, res) => {
@@ -111,7 +109,7 @@ app.post('/api/admin/toggle-status', (req, res) => {
   const user = findUser(userId);
   if (!user) return res.status(404).json({ error: 'User not found.' });
 
-  user.status = status; // 'active' or 'suspended'
+  user.status = status; 
   res.json({ success: true, user });
 });
 
