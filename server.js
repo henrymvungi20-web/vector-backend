@@ -121,7 +121,7 @@ app.post('/api/admin/grant-tier', (req, res) => {
 });
 
 // ==========================================
-// 3. TRADING & METAAPI ENGINE (Bulletproofed)
+// 3. TRADING & METAAPI ENGINE (User-Specific Lookups)
 // ==========================================
 async function getOrCreateAccount(login, password, server, name) {
   const accountApi = api.metatraderAccountApi;
@@ -181,15 +181,28 @@ const handleConnectAccount = async (req, res) => {
   }
 };
 
+// FIXED: Now targets the exact user's connected account ID instead of a random global default
 const handleGetAccountInfo = async (req, res) => {
   try {
+    const userId = req.query.userId || req.headers['x-user-id'];
+    let accountId = null;
+
+    if (userId) {
+      const user = users.find(u => u.id === userId);
+      if (user && user.mt5Account && user.mt5Account.accountId) {
+        accountId = user.mt5Account.accountId;
+      }
+    }
+
     let account = null;
-    if (typeof api.metatraderAccountApi.getAccountsWithInfiniteScrollPagination === 'function') {
+    if (accountId) {
+      account = await api.metatraderAccountApi.getAccount(accountId);
+    } else if (typeof api.metatraderAccountApi.getAccountsWithInfiniteScrollPagination === 'function') {
       const accounts = await api.metatraderAccountApi.getAccountsWithInfiniteScrollPagination({ limit: 10 });
       account = accounts.find(a => a.state === 'DEPLOYED') || accounts[0];
     }
 
-    if (!account) {
+    if (!account || account.state !== 'DEPLOYED') {
       return res.json({ balance: 0, equity: 0, currency: 'USD', state: 'DISCONNECTED' });
     }
 
@@ -200,19 +213,33 @@ const handleGetAccountInfo = async (req, res) => {
     const info = await connection.getAccountInformation();
     res.json(info);
   } catch (error) {
+    console.error('Account Info Error:', error);
     res.json({ balance: 0, equity: 0, currency: 'USD' });
   }
 };
 
+// FIXED: Now targets the exact user's connected account ID for trades
 const handleGetTrades = async (req, res) => {
   try {
+    const userId = req.query.userId || req.headers['x-user-id'];
+    let accountId = null;
+
+    if (userId) {
+      const user = users.find(u => u.id === userId);
+      if (user && user.mt5Account && user.mt5Account.accountId) {
+        accountId = user.mt5Account.accountId;
+      }
+    }
+
     let account = null;
-    if (typeof api.metatraderAccountApi.getAccountsWithInfiniteScrollPagination === 'function') {
+    if (accountId) {
+      account = await api.metatraderAccountApi.getAccount(accountId);
+    } else if (typeof api.metatraderAccountApi.getAccountsWithInfiniteScrollPagination === 'function') {
       const accounts = await api.metatraderAccountApi.getAccountsWithInfiniteScrollPagination({ limit: 10 });
       account = accounts.find(a => a.state === 'DEPLOYED') || accounts[0];
     }
 
-    if (!account) {
+    if (!account || account.state !== 'DEPLOYED') {
       return res.json({ positions: [], liveTrades: [], closedTrades: [] });
     }
 
@@ -223,6 +250,7 @@ const handleGetTrades = async (req, res) => {
     const positions = await connection.getPositions();
     res.json({ positions, liveTrades: positions, closedTrades: [] });
   } catch (error) {
+    console.error('Trades Error:', error);
     res.json({ positions: [], liveTrades: [], closedTrades: [] });
   }
 };
@@ -265,7 +293,7 @@ app.get('/api/signals', handleGetSignals);
 app.get('/api/analyze', handleGetAnalysis);
 
 // ==========================================
-// DUAL DISCONNECT MT5 ROUTES (Bulletproofed)
+// DUAL DISCONNECT MT5 ROUTES
 // ==========================================
 app.post('/api/admin/disconnect-mt5', (req, res) => {
   const { userId, adminEmail } = req.body;
