@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const MetaApi = require('metaapi.cloud-sdk').default;
+const crypto = require('crypto');
 
 const app = express();
 
@@ -19,9 +20,9 @@ app.use((req, res, next) => {
 const token = process.env.META_API_TOKEN;
 const api = new MetaApi(token);
 
-// Your exact Admin Email
 const ADMIN_EMAIL = 'henrymvungi20@gmail.com'; 
 
+// Database store with accessCodes tracking
 const users = [
   {
     id: 'usr_demo_1',
@@ -33,7 +34,9 @@ const users = [
     status: 'active',
     mt5Connected: true,
     mt5Locked: true,
-    mt5Account: { login: '101236718', server: 'DerivSVG-Server-02' }
+    mt5Account: { login: '101236718', server: 'DerivSVG-Server-02' },
+    activeCode: null,
+    codeExpiresAt: null
   }
 ];
 
@@ -64,7 +67,9 @@ app.post('/api/auth/signup', (req, res) => {
       status: 'active',
       mt5Connected: false,
       mt5Locked: false,
-      mt5Account: null
+      mt5Account: null,
+      activeCode: null,
+      codeExpiresAt: null
     };
     users.push(user);
   }
@@ -74,7 +79,7 @@ app.post('/api/auth/signup', (req, res) => {
 });
 
 // ==========================================
-// 2. ADMIN ENDPOINTS (Strictly Locked to You)
+// 2. ADMIN CODE GENERATION & USER MANAGEMENT
 // ==========================================
 app.get('/api/admin/users', (req, res) => {
   const requesterEmail = req.query.email || req.headers['x-user-email'];
@@ -82,6 +87,56 @@ app.get('/api/admin/users', (req, res) => {
     return res.status(403).json({ error: 'Access denied. Administrator privileges required.' });
   }
   res.json({ success: true, users });
+});
+
+// Generate Silver or Gold Code for a User
+app.post('/api/admin/generate-code', (req, res) => {
+  const { userId, plan, adminEmail } = req.body; // plan: 'vecto1' (Silver) or 'vecto2' (Gold)
+  if (!adminEmail || adminEmail.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
+    return res.status(403).json({ error: 'Unauthorized.' });
+  }
+
+  const user = findUser(userId);
+  if (!user) return res.status(404).json({ error: 'User not found.' });
+
+  // Generate random 8-character access code
+  const code = `VECTO-${plan.toUpperCase()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+  
+  // Set validity (1 month from now for Silver/Vecto 1, or custom)
+  const expiresAt = new Date();
+  expiresAt.setMonth(expiresAt.getMonth() + 1);
+
+  user.pendingCode = {
+    code,
+    plan,
+    expiresAt
+  };
+
+  res.json({ success: true, code, plan, expiresAt, user });
+});
+
+// User Redeems Access Code
+app.post('/api/auth/redeem-code', (req, res) => {
+  const { userId, code } = req.body;
+  const user = findUser(userId);
+
+  if (!user) return res.status(404).json({ error: 'User not found.' });
+
+  if (!user.pendingCode || user.pendingCode.code !== code) {
+    return res.status(400).json({ error: 'Invalid access code.' });
+  }
+
+  if (new Date() > new Date(user.pendingCode.expiresAt)) {
+    return res.status(400).json({ error: 'This access code has expired.' });
+  }
+
+  // Activate Tier
+  user.tier = user.pendingCode.plan; // 'vecto1' or 'vecto2'
+  user.activeCode = user.pendingCode.code;
+  user.codeExpiresAt = user.pendingCode.expiresAt;
+  user.pendingCode = null;
+
+  res.json({ success: true, user });
 });
 
 app.post('/api/admin/disconnect-mt5', (req, res) => {
@@ -157,6 +212,10 @@ const handleConnectAccount = async (req, res) => {
   try {
     const { userId, login, password, server, name } = req.body;
     const user = findUser(userId);
+
+    if (user && user.tier === 'free') {
+      return res.status(403).json({ error: 'Please upgrade to Vecto 1 (Silver) or Vecto 2 (Gold) to connect an MT5 account.' });
+    }
 
     if (user && user.mt5Locked) {
       return res.status(403).json({ error: 'MT5 account is permanently locked. Only Admin can disconnect it.' });
