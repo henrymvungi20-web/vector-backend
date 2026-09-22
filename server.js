@@ -137,6 +137,31 @@ app.post('/api/admin/direct-upgrade', (req, res) => {
   res.json({ success: true, user });
 });
 
+// ADMIN INSTANT GRANT / APPROVAL
+app.post('/api/admin/grant-tier', (req, res) => {
+  const { userId, plan, adminEmail } = req.body; // plan: 'vecto1' (Silver) or 'vecto2' (Gold)
+  if (!adminEmail || adminEmail.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
+    return res.status(403).json({ error: 'Unauthorized.' });
+  }
+
+  const user = findUser(userId);
+  if (!user) return res.status(404).json({ error: 'User not found.' });
+
+  // Instantly upgrade tier and clear restrictions
+  user.tier = plan; 
+  user.activeCode = `INSTANT-GRANT-${plan.toUpperCase()}`;
+  
+  const expiresAt = new Date();
+  expiresAt.setMonth(expiresAt.getMonth() + 1); // Valid for 1 month
+  user.codeExpiresAt = expiresAt;
+  user.pendingCode = null;
+  if (user.paymentProof) {
+    user.paymentProof.status = 'approved';
+  }
+
+  res.json({ success: true, user });
+});
+
 // User redeems their access code
 app.post('/api/auth/redeem-code', (req, res) => {
   const { userId, code } = req.body;
