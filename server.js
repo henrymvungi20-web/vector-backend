@@ -26,8 +26,8 @@ app.get('/', (req, res) => {
   res.send('Vector Backend is live');
 });
 
-// Add MT5 Account Route
-app.post('/connect-account', async (req, res) => {
+// Shared Account Connection Handler
+const handleConnectAccount = async (req, res) => {
   try {
     const { login, password, server, name } = req.body;
 
@@ -35,7 +35,6 @@ app.post('/connect-account', async (req, res) => {
       return res.status(400).json({ error: 'Missing required account credentials.' });
     }
 
-    // Correct SDK method for fetching accounts
     const accounts = await api.metatraderAccountApi.getAccounts();
     let account = accounts.find(a => a.login === login && a.server === server);
 
@@ -51,12 +50,16 @@ app.post('/connect-account', async (req, res) => {
       });
     }
 
-    res.json({ success: true, accountId: account.id });
+    res.json({ success: true, accountId: account.id, account });
   } catch (error) {
     console.error('MetaApi Error:', error);
     res.status(500).json({ error: error.message || 'Failed to connect account.' });
   }
-});
+};
+
+// Route handlers matching Lovable endpoints
+app.post('/api/connect-user', handleConnectAccount);
+app.post('/connect-account', handleConnectAccount);
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
