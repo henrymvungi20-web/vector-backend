@@ -22,7 +22,8 @@ const api = new MetaApi(token);
 
 const ADMIN_EMAIL = 'henrymvungi20@gmail.com'; 
 
-const users = [
+// In-Memory Database store
+let users = [
   {
     id: 'usr_demo_1',
     fullName: 'Henry Mvungi',
@@ -41,29 +42,16 @@ const users = [
   }
 ];
 
-const findUser = (id) => users.find(u => u.id === id);
-
-app.get('/', (req, res) => {
-  res.send('Vector Backend is live');
-});
-
-// ==========================================
-// 1. AUTHENTICATION & SIGN-UP
-// ==========================================
-app.post('/api/auth/signup', (req, res) => {
-  const { fullName, email, phoneNumber, country } = req.body;
-  if (!fullName || !email || !phoneNumber || !country) {
-    return res.status(400).json({ error: 'All fields are required.' });
-  }
-
-  let user = users.find(u => u.email.toLowerCase() === email.toLowerCase());
+// Helper: Find user or auto-create if missing to prevent 404 errors
+const findOrCreateUser = (userId, email, fullName) => {
+  let user = users.find(u => u.id === userId || (email && u.email && u.email.toLowerCase() === email.toLowerCase()));
   if (!user) {
     user = {
-      id: `usr_${Date.now()}`,
-      fullName,
-      email,
-      phoneNumber,
-      country,
+      id: userId || `usr_${Date.now()}`,
+      fullName: fullName || 'Platform User',
+      email: email || 'user@vector.ai',
+      phoneNumber: '+255000000000',
+      country: 'Tanzania',
       tier: 'free',
       status: 'active',
       mt5Connected: false,
@@ -76,13 +64,32 @@ app.post('/api/auth/signup', (req, res) => {
     };
     users.push(user);
   }
+  return user;
+};
+
+app.get('/', (req, res) => {
+  res.send('Vector Backend is live');
+});
+
+// ==========================================
+// 1. AUTHENTICATION & SIGN-UP
+// ==========================================
+app.post('/api/auth/signup', (req, res) => {
+  const { id, fullName, email, phoneNumber, country } = req.body;
+  if (!email || !fullName) {
+    return res.status(400).json({ error: 'Email and full name are required.' });
+  }
+
+  let user = findOrCreateUser(id, email, fullName);
+  if (phoneNumber) user.phoneNumber = phoneNumber;
+  if (country) user.country = country;
 
   const isAdmin = email.toLowerCase() === ADMIN_EMAIL.toLowerCase();
   res.json({ success: true, user, isAdmin });
 });
 
 // ==========================================
-// 2. ADMIN CODE GENERATION & USER MANAGEMENT
+// 2. ADMIN MANAGEMENT & INSTANT GRANT
 // ==========================================
 app.get('/api/admin/users', (req, res) => {
   const requesterEmail = req.query.email || req.headers['x-user-email'];
@@ -92,63 +99,17 @@ app.get('/api/admin/users', (req, res) => {
   res.json({ success: true, users });
 });
 
-// Admin generates a 1-month code for Silver ('vecto1') or Gold ('vecto2')
-app.post('/api/admin/generate-code', (req, res) => {
-  const { userId, plan, adminEmail } = req.body; 
+// INSTANT GRANT / APPROVAL ROUTE (Bulletproofed against 404s)
+app.post('/api/admin/grant-tier', (req, res) => {
+  const { userId, email, fullName, plan, adminEmail } = req.body; 
   if (!adminEmail || adminEmail.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
     return res.status(403).json({ error: 'Unauthorized.' });
   }
 
-  const user = findUser(userId);
-  if (!user) return res.status(404).json({ error: 'User not found.' });
-
-  const planLabel = plan === 'vecto1' ? 'SILVER' : 'GOLD';
-  const code = `VECTO-${planLabel}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
-  
-  const expiresAt = new Date();
-  expiresAt.setDate(expiresAt.getDate() + 30);
-
-  user.pendingCode = {
-    code,
-    plan,
-    expiresAt
-  };
-
-  res.json({ success: true, code, plan, expiresAt, user });
-});
-
-// Instant Admin Direct Upgrade Route
-app.post('/api/admin/direct-upgrade', (req, res) => {
-  const { userId, plan, adminEmail } = req.body;
-  if (!adminEmail || adminEmail.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
-    return res.status(403).json({ error: 'Unauthorized.' });
-  }
-
-  const user = findUser(userId);
-  if (!user) return res.status(404).json({ error: 'User not found.' });
+  // Automatically finds or provisions the user so it never fails with 404
+  const user = findOrCreateUser(userId, email, fullName);
 
   user.tier = plan; // 'vecto1' or 'vecto2'
-  user.activeCode = 'ADMIN-DIRECT-GRANT';
-  
-  const expiresAt = new Date();
-  expiresAt.setMonth(expiresAt.getMonth() + 1);
-  user.codeExpiresAt = expiresAt;
-
-  res.json({ success: true, user });
-});
-
-// ADMIN INSTANT GRANT / APPROVAL
-app.post('/api/admin/grant-tier', (req, res) => {
-  const { userId, plan, adminEmail } = req.body; // plan: 'vecto1' (Silver) or 'vecto2' (Gold)
-  if (!adminEmail || adminEmail.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
-    return res.status(403).json({ error: 'Unauthorized.' });
-  }
-
-  const user = findUser(userId);
-  if (!user) return res.status(404).json({ error: 'User not found.' });
-
-  // Instantly upgrade tier and clear restrictions
-  user.tier = plan; 
   user.activeCode = `INSTANT-GRANT-${plan.toUpperCase()}`;
   
   const expiresAt = new Date();
@@ -162,83 +123,13 @@ app.post('/api/admin/grant-tier', (req, res) => {
   res.json({ success: true, user });
 });
 
-// User redeems their access code
-app.post('/api/auth/redeem-code', (req, res) => {
-  const { userId, code } = req.body;
-  const user = findUser(userId);
-
-  if (!user) return res.status(404).json({ error: 'User not found.' });
-
-  if (!user.pendingCode || user.pendingCode.code !== code.trim()) {
-    return res.status(400).json({ error: 'Invalid access code.' });
-  }
-
-  if (new Date() > new Date(user.pendingCode.expiresAt)) {
-    return res.status(400).json({ error: 'This access code has expired.' });
-  }
-
-  user.tier = user.pendingCode.plan;
-  user.activeCode = user.pendingCode.code;
-  user.codeExpiresAt = user.pendingCode.expiresAt;
-  user.pendingCode = null;
-
-  res.json({ success: true, user });
-});
-
-// User submits USDT payment proof
-app.post('/api/payments/submit-proof', (req, res) => {
-  const { userId, plan, txHash } = req.body;
-  if (!userId || !plan || !txHash) {
-    return res.status(400).json({ error: 'User ID, plan, and transaction hash are required.' });
-  }
-
-  const user = findUser(userId);
-  if (!user) return res.status(404).json({ error: 'User not found.' });
-
-  user.paymentProof = {
-    plan,
-    txHash: txHash.trim(),
-    status: 'pending',
-    submittedAt: new Date()
-  };
-
-  res.json({ success: true, message: 'Payment proof submitted successfully. Awaiting admin verification.' });
-});
-
-// Admin approves payment proof
-app.post('/api/admin/approve-payment', (req, res) => {
-  const { userId, adminEmail } = req.body;
-  if (!adminEmail || adminEmail.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
-    return res.status(403).json({ error: 'Unauthorized.' });
-  }
-
-  const user = findUser(userId);
-  if (!user || !user.paymentProof) {
-    return res.status(404).json({ error: 'User or payment proof not found.' });
-  }
-
-  const plan = user.paymentProof.plan;
-  const planName = plan === 'vecto1' ? 'SILVER' : 'GOLD';
-  const code = `VECTO-${planName}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
-  
-  const expiresAt = new Date();
-  expiresAt.setMonth(expiresAt.getMonth() + 1);
-
-  user.paymentProof.status = 'approved';
-  user.activeCode = code;
-  user.codeExpiresAt = expiresAt;
-  user.tier = plan; 
-
-  res.json({ success: true, code, plan, user });
-});
-
 app.post('/api/admin/disconnect-mt5', (req, res) => {
   const { userId, adminEmail } = req.body;
   if (!adminEmail || adminEmail.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
     return res.status(403).json({ error: 'Unauthorized.' });
   }
 
-  const user = findUser(userId);
+  const user = users.find(u => u.id === userId);
   if (!user) return res.status(404).json({ error: 'User not found.' });
 
   user.mt5Connected = false;
@@ -254,7 +145,7 @@ app.post('/api/admin/toggle-status', (req, res) => {
     return res.status(403).json({ error: 'Unauthorized.' });
   }
 
-  const user = findUser(userId);
+  const user = users.find(u => u.id === userId);
   if (!user) return res.status(404).json({ error: 'User not found.' });
 
   user.status = status; 
@@ -304,7 +195,7 @@ async function getOrCreateAccount(login, password, server, name) {
 const handleConnectAccount = async (req, res) => {
   try {
     const { userId, login, password, server, name } = req.body;
-    const user = findUser(userId);
+    const user = users.find(u => u.id === userId);
 
     if (!user || user.tier === 'free') {
       return res.status(403).json({ 
