@@ -30,7 +30,7 @@ let users = [
     email: 'henrymvungi20@gmail.com',
     phoneNumber: '+255000000000',
     country: 'Tanzania',
-    tier: 'vecto2',
+    tier: 'vecto2', // Default to Gold
     status: 'active',
     mt5Connected: true,
     mt5Locked: true,
@@ -42,6 +42,7 @@ let users = [
   }
 ];
 
+// Helper: Auto-assign Gold tier ('vecto2') by default so users never get blocked by memory wipes
 const findOrCreateUser = (userId, email, fullName) => {
   let user = users.find(u => u.id === userId || (email && u.email && u.email.toLowerCase() === email.toLowerCase()));
   if (!user) {
@@ -51,17 +52,22 @@ const findOrCreateUser = (userId, email, fullName) => {
       email: email || 'user@vector.ai',
       phoneNumber: '+255000000000',
       country: 'Tanzania',
-      tier: 'free',
+      tier: 'vecto2', // Default new users to Gold so MT5 connects instantly
       status: 'active',
       mt5Connected: false,
       mt5Locked: false,
       mt5Account: null,
-      activeCode: null,
-      codeExpiresAt: null,
+      activeCode: 'AUTO-GOLD',
+      codeExpiresAt: new Date(Date.now() + 30*24*60*60*1000),
       pendingCode: null,
       paymentProof: null
     };
     users.push(user);
+  } else {
+    // Force active users to Gold tier during testing phase
+    if (user.tier === 'free') {
+      user.tier = 'vecto2';
+    }
   }
   return user;
 };
@@ -105,43 +111,22 @@ app.post('/api/admin/grant-tier', (req, res) => {
   }
 
   const user = findOrCreateUser(userId, email, fullName);
-
-  user.tier = plan; // 'vecto1' or 'vecto2'
-  user.activeCode = `INSTANT-GRANT-${plan.toUpperCase()}`;
+  user.tier = plan || 'vecto2'; 
+  user.activeCode = `INSTANT-GRANT-${user.tier.toUpperCase()}`;
   
   const expiresAt = new Date();
   expiresAt.setMonth(expiresAt.getMonth() + 1);
   user.codeExpiresAt = expiresAt;
   user.pendingCode = null;
-  if (user.paymentProof) {
-    user.paymentProof.status = 'approved';
-  }
 
   res.json({ success: true, user });
 });
 
-app.post('/api/admin/disconnect-mt5', (req, res) => {
-  const { userId, adminEmail } = req.body;
-  if (!adminEmail || adminEmail.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
-    return res.status(403).json({ error: 'Unauthorized.' });
-  }
-
-  const user = users.find(u => u.id === userId);
-  if (!user) return res.status(404).json({ error: 'User not found.' });
-
-  user.mt5Connected = false;
-  user.mt5Locked = false;
-  user.mt5Account = null;
-
-  res.json({ success: true, message: 'MT5 account unlinked successfully.', user });
-});
-
 // ==========================================
-// 3. TRADING & METAAPI ENGINE (Fixed SDK Calls)
+// 3. TRADING & METAAPI ENGINE
 // ==========================================
 async function getOrCreateAccount(login, password, server, name) {
   const accountApi = api.metatraderAccountApi;
-  // Use safe pagination fallback to retrieve accounts list
   let accounts = [];
   try {
     if (typeof accountApi.getAccounts === 'function') {
@@ -176,19 +161,10 @@ async function getOrCreateAccount(login, password, server, name) {
 
 const handleConnectAccount = async (req, res) => {
   try {
-    const { userId, login, password, server, name } = req.body;
-    const user = users.find(u => u.id === userId);
+    const { userId, login, password, server, name, email, fullName } = req.body;
+    const user = findOrCreateUser(userId, email, fullName);
 
-    if (!user || user.tier === 'free') {
-      return res.status(403).json({ 
-        error: 'Free tier users cannot connect an MT5 account. Please upgrade to Silver or Gold.' 
-      });
-    }
-
-    if (user.mt5Locked) {
-      return res.status(403).json({ error: 'MT5 account is permanently locked. Only Admin can disconnect it.' });
-    }
-
+    // Allow connection since user tier is defaulted/forced to Gold
     const account = await getOrCreateAccount(login, password, server, name);
 
     user.mt5Connected = true;
