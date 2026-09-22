@@ -36,7 +36,8 @@ const users = [
     mt5Account: { login: '101236718', server: 'DerivSVG-Server-02' },
     activeCode: null,
     codeExpiresAt: null,
-    pendingCode: null
+    pendingCode: null,
+    paymentProof: null
   }
 ];
 
@@ -70,7 +71,8 @@ app.post('/api/auth/signup', (req, res) => {
       mt5Account: null,
       activeCode: null,
       codeExpiresAt: null,
-      pendingCode: null
+      pendingCode: null,
+      paymentProof: null
     };
     users.push(user);
   }
@@ -92,7 +94,7 @@ app.get('/api/admin/users', (req, res) => {
 
 // Admin generates a 1-month code for Silver ('vecto1') or Gold ('vecto2')
 app.post('/api/admin/generate-code', (req, res) => {
-  const { userId, plan, adminEmail } = req.body; // plan: 'vecto1' or 'vecto2'
+  const { userId, plan, adminEmail } = req.body; 
   if (!adminEmail || adminEmail.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
     return res.status(403).json({ error: 'Unauthorized.' });
   }
@@ -103,7 +105,6 @@ app.post('/api/admin/generate-code', (req, res) => {
   const planLabel = plan === 'vecto1' ? 'SILVER' : 'GOLD';
   const code = `VECTO-${planLabel}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
   
-  // Valid for 1 Month (30 Days)
   const expiresAt = new Date();
   expiresAt.setDate(expiresAt.getDate() + 30);
 
@@ -114,6 +115,26 @@ app.post('/api/admin/generate-code', (req, res) => {
   };
 
   res.json({ success: true, code, plan, expiresAt, user });
+});
+
+// Instant Admin Direct Upgrade Route
+app.post('/api/admin/direct-upgrade', (req, res) => {
+  const { userId, plan, adminEmail } = req.body;
+  if (!adminEmail || adminEmail.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
+    return res.status(403).json({ error: 'Unauthorized.' });
+  }
+
+  const user = findUser(userId);
+  if (!user) return res.status(404).json({ error: 'User not found.' });
+
+  user.tier = plan; // 'vecto1' or 'vecto2'
+  user.activeCode = 'ADMIN-DIRECT-GRANT';
+  
+  const expiresAt = new Date();
+  expiresAt.setMonth(expiresAt.getMonth() + 1);
+  user.codeExpiresAt = expiresAt;
+
+  res.json({ success: true, user });
 });
 
 // User redeems their access code
@@ -131,13 +152,59 @@ app.post('/api/auth/redeem-code', (req, res) => {
     return res.status(400).json({ error: 'This access code has expired.' });
   }
 
-  // Activate Tier
   user.tier = user.pendingCode.plan;
   user.activeCode = user.pendingCode.code;
   user.codeExpiresAt = user.pendingCode.expiresAt;
   user.pendingCode = null;
 
   res.json({ success: true, user });
+});
+
+// User submits USDT payment proof
+app.post('/api/payments/submit-proof', (req, res) => {
+  const { userId, plan, txHash } = req.body;
+  if (!userId || !plan || !txHash) {
+    return res.status(400).json({ error: 'User ID, plan, and transaction hash are required.' });
+  }
+
+  const user = findUser(userId);
+  if (!user) return res.status(404).json({ error: 'User not found.' });
+
+  user.paymentProof = {
+    plan,
+    txHash: txHash.trim(),
+    status: 'pending',
+    submittedAt: new Date()
+  };
+
+  res.json({ success: true, message: 'Payment proof submitted successfully. Awaiting admin verification.' });
+});
+
+// Admin approves payment proof
+app.post('/api/admin/approve-payment', (req, res) => {
+  const { userId, adminEmail } = req.body;
+  if (!adminEmail || adminEmail.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
+    return res.status(403).json({ error: 'Unauthorized.' });
+  }
+
+  const user = findUser(userId);
+  if (!user || !user.paymentProof) {
+    return res.status(404).json({ error: 'User or payment proof not found.' });
+  }
+
+  const plan = user.paymentProof.plan;
+  const planName = plan === 'vecto1' ? 'SILVER' : 'GOLD';
+  const code = `VECTO-${planName}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+  
+  const expiresAt = new Date();
+  expiresAt.setMonth(expiresAt.getMonth() + 1);
+
+  user.paymentProof.status = 'approved';
+  user.activeCode = code;
+  user.codeExpiresAt = expiresAt;
+  user.tier = plan; 
+
+  res.json({ success: true, code, plan, user });
 });
 
 app.post('/api/admin/disconnect-mt5', (req, res) => {
@@ -214,10 +281,9 @@ const handleConnectAccount = async (req, res) => {
     const { userId, login, password, server, name } = req.body;
     const user = findUser(userId);
 
-    // BLOCK FREE USERS FROM CONNECTING MT5 (Saves MetaApi charges)
     if (!user || user.tier === 'free') {
       return res.status(403).json({ 
-        error: 'Free tier users cannot connect an MT5 account. Please upgrade to Silver or Gold using your access code.' 
+        error: 'Free tier users cannot connect an MT5 account. Please upgrade to Silver or Gold.' 
       });
     }
 
