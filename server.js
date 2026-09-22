@@ -120,13 +120,29 @@ app.post('/api/admin/grant-tier', (req, res) => {
   res.json({ success: true, user });
 });
 
+// Admin Disconnect MT5 Route
+app.post('/api/admin/disconnect-mt5', (req, res) => {
+  const { userId, adminEmail } = req.body;
+  if (!adminEmail || adminEmail.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
+    return res.status(403).json({ error: 'Unauthorized.' });
+  }
+
+  const user = users.find(u => u.id === userId);
+  if (!user) return res.status(404).json({ error: 'User not found.' });
+
+  user.mt5Connected = false;
+  user.mt5Locked = false;
+  user.mt5Account = null;
+
+  res.json({ success: true, message: 'MT5 account unlinked successfully.', user });
+});
+
 // ==========================================
 // 3. TRADING & METAAPI ENGINE (Bulletproofed)
 // ==========================================
 async function getOrCreateAccount(login, password, server, name) {
   const accountApi = api.metatraderAccountApi;
 
-  // Safely check pagination if available, avoiding the broken getAccounts() method
   try {
     if (typeof accountApi.getAccountsWithInfiniteScrollPagination === 'function') {
       const accounts = await accountApi.getAccountsWithInfiniteScrollPagination({ limit: 100 });
@@ -142,7 +158,6 @@ async function getOrCreateAccount(login, password, server, name) {
     console.log('Pagination lookup notice:', e.message);
   }
 
-  // Create the account directly if not found via pagination
   const account = await accountApi.createAccount({
     name: name || `MT5-${login}`,
     type: 'cloud',
