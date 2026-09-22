@@ -8,7 +8,6 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Custom CORS Headers
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
@@ -20,7 +19,9 @@ app.use((req, res, next) => {
 const token = process.env.META_API_TOKEN;
 const api = new MetaApi(token);
 
-// In-Memory Database Store for Users & Tiers
+// Admin email configuration (Set your email here)
+const ADMIN_EMAIL = 'admin@vector.ai'; 
+
 const users = [
   {
     id: 'usr_demo_1',
@@ -43,7 +44,7 @@ app.get('/', (req, res) => {
 });
 
 // ==========================================
-// 1. AUTHENTICATION & SIGN-UP
+// 1. AUTHENTICATION & SIGN-UP (Real User Data)
 // ==========================================
 app.post('/api/auth/signup', (req, res) => {
   const { fullName, email, phoneNumber, country } = req.body;
@@ -68,18 +69,29 @@ app.post('/api/auth/signup', (req, res) => {
     users.push(user);
   }
 
-  res.json({ success: true, user });
+  // Check if this user is the admin
+  const isAdmin = email.toLowerCase() === ADMIN_EMAIL.toLowerCase();
+
+  res.json({ success: true, user, isAdmin });
 });
 
 // ==========================================
-// 2. ADMIN ENDPOINTS (Fixes Lovable 404)
+// 2. ADMIN ENDPOINTS (Restricted Security)
 // ==========================================
 app.get('/api/admin/users', (req, res) => {
+  const requesterEmail = req.query.email || req.headers['x-user-email'];
+  if (!requesterEmail || requesterEmail.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
+    return res.status(403).json({ error: 'Access denied. Administrator privileges required.' });
+  }
   res.json({ success: true, users });
 });
 
 app.post('/api/admin/disconnect-mt5', (req, res) => {
-  const { userId } = req.body;
+  const { userId, adminEmail } = req.body;
+  if (!adminEmail || adminEmail.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
+    return res.status(403).json({ error: 'Unauthorized.' });
+  }
+
   const user = findUser(userId);
   if (!user) return res.status(404).json({ error: 'User not found.' });
 
@@ -87,28 +99,37 @@ app.post('/api/admin/disconnect-mt5', (req, res) => {
   user.mt5Locked = false;
   user.mt5Account = null;
 
-  res.json({ success: true, message: 'MT5 account unlinked by admin.', user });
+  res.json({ success: true, message: 'MT5 account unlinked successfully. User can now bind a new account.', user });
 });
 
 app.post('/api/admin/toggle-status', (req, res) => {
-  const { userId, status } = req.body;
+  const { userId, status, adminEmail } = req.body;
+  if (!adminEmail || adminEmail.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
+    return res.status(403).json({ error: 'Unauthorized.' });
+  }
+
   const user = findUser(userId);
   if (!user) return res.status(404).json({ error: 'User not found.' });
 
-  user.status = status;
+  user.status = status; // 'active' or 'suspended'
   res.json({ success: true, user });
 });
 
 app.delete('/api/admin/delete-user/:id', (req, res) => {
+  const adminEmail = req.query.adminEmail || req.headers['x-user-email'];
+  if (!adminEmail || adminEmail.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
+    return res.status(403).json({ error: 'Unauthorized.' });
+  }
+
   const index = users.findIndex(u => u.id === req.params.id);
   if (index === -1) return res.status(404).json({ error: 'User not found.' });
 
   users.splice(index, 1);
-  res.json({ success: true, message: 'User deleted.' });
+  res.json({ success: true, message: 'User account permanently deleted.' });
 });
 
 // ==========================================
-// 3. MT5 & TRADING ENGINE ENDPOINTS
+// 3. TRADING & METAAPI ENGINE
 // ==========================================
 async function getOrCreateAccount(login, password, server, name) {
   const accountApi = api.metatraderAccountApi;
@@ -136,12 +157,21 @@ async function getOrCreateAccount(login, password, server, name) {
 
 const handleConnectAccount = async (req, res) => {
   try {
-    const { login, password, server, name } = req.body;
-    if (!login || !password || !server) {
-      return res.status(400).json({ error: 'Missing account credentials.' });
+    const { userId, login, password, server, name } = req.body;
+    const user = findUser(userId);
+
+    if (user && user.mt5Locked) {
+      return res.status(403).json({ error: 'MT5 account is permanently locked. Only Admin can disconnect it.' });
     }
 
     const account = await getOrCreateAccount(login, password, server, name);
+
+    if (user) {
+      user.mt5Connected = true;
+      user.mt5Locked = true;
+      user.mt5Account = { login: String(login), server, accountId: account.id };
+    }
+
     res.json({ success: true, accountId: account.id, state: account.state, account });
   } catch (error) {
     console.error('Connect Error:', error);
@@ -193,7 +223,7 @@ const handleGetSignals = (req, res) => {
   const symbol = req.query.symbol || 'XAUUSD';
   res.json({
     success: true,
-    symbol: symbol,
+    symbol,
     type: 'BUY',
     entry: '2,638.16 - 2,639.55',
     stopLoss: '2,631.18',
@@ -207,7 +237,7 @@ const handleGetAnalysis = (req, res) => {
   const symbol = req.query.symbol || 'XAUUSD';
   res.json({
     success: true,
-    symbol: symbol,
+    symbol,
     h1Sweep: { status: 'Confirmed', detail: 'CRT-Low raided at 2,635.62, closed back inside' },
     vwap: { status: 'Confirmed', val: '2,637.51', vwap: '2,641.46', vah: '2,643.18' },
     delta: { status: 'Waiting', cumulativeDelta: '-760' },
@@ -217,16 +247,12 @@ const handleGetAnalysis = (req, res) => {
   });
 };
 
-// Route Registrations
 app.post('/api/connect-user', handleConnectAccount);
 app.post('/connect-account', handleConnectAccount);
-
 app.get('/api/account-info', handleGetAccountInfo);
 app.get('/api/account', handleGetAccountInfo);
-
 app.get('/api/trades', handleGetTrades);
 app.get('/api/positions', handleGetTrades);
-
 app.get('/api/signals', handleGetSignals);
 app.get('/api/analyze', handleGetAnalysis);
 
