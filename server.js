@@ -8,7 +8,6 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Custom CORS Headers
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
@@ -20,31 +19,94 @@ app.use((req, res, next) => {
 const token = process.env.META_API_TOKEN;
 const api = new MetaApi(token);
 
-app.get('/', (req, res) => {
-  res.send('Vector Backend is live');
+// In-Memory Database Store (Replace with PostgreSQL/MongoDB in production)
+const users = [];
+
+// Helper: Find User by ID
+const findUser = (id) => users.find(u => u.id === id);
+
+// ==========================================
+// 1. AUTHENTICATION & USER MANAGEMENT
+// ==========================================
+
+// Sign Up Route
+app.post('/api/auth/signup', (req, res) => {
+  const { fullName, email, phoneNumber, country } = req.body;
+
+  if (!fullName || !email || !phoneNumber || !country) {
+    return res.status(400).json({ error: 'All registration fields are required.' });
+  }
+
+  const existingUser = users.find(u => u.email === email);
+  if (existingUser) {
+    return res.status(400).json({ error: 'User already exists with this email.' });
+  }
+
+  const newUser = {
+    id: `usr_${Date.now()}`,
+    fullName,
+    email,
+    phoneNumber,
+    country,
+    tier: 'free', // Options: 'free', 'vecto1', 'vecto2'
+    status: 'active', // Options: 'active', 'suspended'
+    mt5Connected: false,
+    mt5Account: null, // { login, server, metaApiAccountId }
+    mt5Locked: false,
+    createdAt: new Date()
+  };
+
+  users.push(newUser);
+  res.json({ success: true, user: newUser });
 });
 
-// Helper to retrieve deployed MT5 account
-async function getDeployedAccount() {
-  const accounts = await api.metatraderAccountApi.getAccounts();
-  return accounts.find(a => a.state === 'DEPLOYED') || accounts[0];
-}
+// Sign In Route
+app.post('/api/auth/signin', (req, res) => {
+  const { email } = req.body;
+  const user = users.find(u => u.email === email);
 
-// 1. Account Connection
-const handleConnectAccount = async (req, res) => {
+  if (!user) {
+    return res.status(404).json({ error: 'User account not found.' });
+  }
+
+  if (user.status === 'suspended') {
+    return res.status(403).json({ error: 'Account suspended. Please contact support.' });
+  }
+
+  res.json({ success: true, user });
+});
+
+// ==========================================
+// 2. MT5 SINGLE ACCOUNT LOCKING LOGIC
+// ==========================================
+
+app.post('/api/connect-user', async (req, res) => {
   try {
-    const { login, password, server, name } = req.body;
-    if (!login || !password || !server) {
-      return res.status(400).json({ error: 'Missing required credentials.' });
+    const { userId, login, password, server } = req.body;
+    const user = findUser(userId);
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found.' });
     }
 
+    if (user.tier === 'free') {
+      return res.status(403).json({ error: 'Upgrade to Vecto 1 or Vecto 2 to connect MT5.' });
+    }
+
+    if (user.mt5Locked) {
+      return res.status(403).json({ 
+        error: 'MT5 account is permanently locked. Only Admin can change or disconnect your account.' 
+      });
+    }
+
+    // Connect to MetaApi
     const accountApi = api.metatraderAccountApi;
     const accounts = await accountApi.getAccounts();
     let account = accounts.find(a => String(a.login) === String(login) && a.server === server);
 
     if (!account) {
       account = await accountApi.createAccount({
-        name: name || `MT5-${login}`,
+        name: `${user.fullName}-MT5`,
         type: 'cloud',
         login: String(login),
         password: password,
@@ -58,104 +120,75 @@ const handleConnectAccount = async (req, res) => {
       await account.deploy();
     }
 
-    res.json({ success: true, accountId: account.id, state: account.state });
+    // Lock account to user
+    user.mt5Connected = true;
+    user.mt5Locked = true;
+    user.mt5Account = {
+      login: String(login),
+      server: server,
+      metaApiAccountId: account.id
+    };
+
+    res.json({ success: true, accountId: account.id, user });
   } catch (error) {
-    console.error('Connect Error:', error);
-    res.status(500).json({ error: error.message || 'Failed to connect account.' });
+    console.error('Connection Error:', error);
+    res.status(500).json({ error: error.message || 'Failed to bind MT5 account.' });
   }
-};
+});
 
-// 2. Trades & Positions
-const handleGetTrades = async (req, res) => {
-  try {
-    const account = await getDeployedAccount();
-    if (!account) return res.json({ positions: [], liveTrades: [], closedTrades: [] });
+// ==========================================
+// 3. ADMIN CONTROL ENDPOINTS
+// ==========================================
 
-    const connection = account.getRPCConnection();
-    await connection.connect();
-    await connection.waitSynchronized();
+// Get All Users (Admin)
+app.get('/api/admin/users', (req, res) => {
+  res.json({ success: true, users });
+});
 
-    const positions = await connection.getPositions();
-    res.json({ positions, liveTrades: positions, closedTrades: [] });
-  } catch (error) {
-    res.json({ positions: [], liveTrades: [], closedTrades: [] });
-  }
-};
+// Disconnect / Reset User MT5 Account (Admin Only)
+app.post('/api/admin/disconnect-mt5', (req, res) => {
+  const { userId } = req.body;
+  const user = findUser(userId);
 
-// 3. Account Balance & Info
-const handleGetAccountInfo = async (req, res) => {
-  try {
-    const account = await getDeployedAccount();
-    if (!account) return res.json({ balance: 0, equity: 0, currency: 'USD' });
+  if (!user) return res.status(404).json({ error: 'User not found.' });
 
-    const connection = account.getRPCConnection();
-    await connection.connect();
-    await connection.waitSynchronized();
+  user.mt5Connected = false;
+  user.mt5Locked = false;
+  user.mt5Account = null;
 
-    const info = await connection.getAccountInformation();
-    res.json(info);
-  } catch (error) {
-    res.json({ balance: 0, equity: 0, currency: 'USD' });
-  }
-};
+  res.json({ success: true, message: 'MT5 account unlinked successfully.', user });
+});
 
-// 4. Signals Endpoint (Fixes 404 in "Find Signals")
-const handleGetSignals = async (req, res) => {
-  try {
-    const symbol = req.query.symbol || 'XAUUSD';
-    res.json({
-      success: true,
-      symbol: symbol,
-      type: 'BUY',
-      entry: '2,640.69 - 2,642.07',
-      stopLoss: '2,631.57',
-      tp1: '2,643.80',
-      tp2: '2,647.45',
-      status: 'Active'
-    });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch signals' });
-  }
-};
+// Suspend / Activate User (Admin Only)
+app.post('/api/admin/toggle-status', (req, res) => {
+  const { userId, status } = req.body;
+  const user = findUser(userId);
 
-// 5. Market Analysis Endpoint (Fixes 404 in "Analyze Market & Trade")
-const handleGetAnalysis = async (req, res) => {
-  try {
-    const symbol = req.query.symbol || 'XAUUSD';
-    res.json({
-      success: true,
-      symbol: symbol,
-      h1Sweep: { status: 'Confirmed', detail: 'CRT-Low raided at 2,635.62, closed back inside' },
-      vwap: { status: 'Confirmed', val: '2,637.51', vwap: '2,641.46', vah: '2,643.18' },
-      delta: { status: 'Waiting', cumulativeDelta: '-760' },
-      crtHigh: '2,644.29',
-      crtLow: '2,638.84',
-      m5Atr: '3.56'
-    });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch analysis' });
-  }
-};
+  if (!user) return res.status(404).json({ error: 'User not found.' });
 
-// Routes Setup
-app.post('/api/connect-user', handleConnectAccount);
-app.post('/connect-account', handleConnectAccount);
+  user.status = status; // 'active' or 'suspended'
+  res.json({ success: true, user });
+});
 
-app.get('/api/trades', handleGetTrades);
-app.get('/api/positions', handleGetTrades);
-app.get('/trades', handleGetTrades);
+// Delete User Account (Admin Only)
+app.delete('/api/admin/delete-user/:id', (req, res) => {
+  const index = users.findIndex(u => u.id === req.params.id);
+  if (index === -1) return res.status(404).json({ error: 'User not found.' });
 
-app.get('/api/account-info', handleGetAccountInfo);
-app.get('/api/account', handleGetAccountInfo);
+  users.splice(index, 1);
+  res.json({ success: true, message: 'User deleted successfully.' });
+});
 
-app.get('/api/signals', handleGetSignals);
-app.get('/api/find-signals', handleGetSignals);
-app.get('/signals', handleGetSignals);
+// Set User Subscription Tier (Admin Only)
+app.post('/api/admin/set-tier', (req, res) => {
+  const { userId, tier } = req.body; // 'free', 'vecto1', 'vecto2'
+  const user = findUser(userId);
 
-app.get('/api/analyze', handleGetAnalysis);
-app.get('/api/analysis', handleGetAnalysis);
-app.get('/api/market-analysis', handleGetAnalysis);
-app.get('/analyze', handleGetAnalysis);
+  if (!user) return res.status(404).json({ error: 'User not found.' });
+
+  user.tier = tier;
+  res.json({ success: true, user });
+});
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
