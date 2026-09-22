@@ -30,7 +30,7 @@ let users = [
     email: 'henrymvungi20@gmail.com',
     phoneNumber: '+255000000000',
     country: 'Tanzania',
-    tier: 'vecto2', // Default to Gold
+    tier: 'vecto2',
     status: 'active',
     mt5Connected: true,
     mt5Locked: true,
@@ -42,7 +42,6 @@ let users = [
   }
 ];
 
-// Helper: Auto-assign Gold tier ('vecto2') by default so users never get blocked by memory wipes
 const findOrCreateUser = (userId, email, fullName) => {
   let user = users.find(u => u.id === userId || (email && u.email && u.email.toLowerCase() === email.toLowerCase()));
   if (!user) {
@@ -52,7 +51,7 @@ const findOrCreateUser = (userId, email, fullName) => {
       email: email || 'user@vector.ai',
       phoneNumber: '+255000000000',
       country: 'Tanzania',
-      tier: 'vecto2', // Default new users to Gold so MT5 connects instantly
+      tier: 'vecto2', 
       status: 'active',
       mt5Connected: false,
       mt5Locked: false,
@@ -64,7 +63,6 @@ const findOrCreateUser = (userId, email, fullName) => {
     };
     users.push(user);
   } else {
-    // Force active users to Gold tier during testing phase
     if (user.tier === 'free') {
       user.tier = 'vecto2';
     }
@@ -164,14 +162,19 @@ const handleConnectAccount = async (req, res) => {
     const { userId, login, password, server, name, email, fullName } = req.body;
     const user = findOrCreateUser(userId, email, fullName);
 
-    // Allow connection since user tier is defaulted/forced to Gold
     const account = await getOrCreateAccount(login, password, server, name);
 
     user.mt5Connected = true;
     user.mt5Locked = true;
     user.mt5Account = { login: String(login), server, accountId: account.id };
 
-    res.json({ success: true, accountId: account.id, state: account.state, account });
+    // FIX: Return clean primitives instead of the circular 'account' class instance
+    res.json({ 
+      success: true, 
+      accountId: account.id, 
+      state: account.state,
+      message: 'Account connected and deployed successfully.' 
+    });
   } catch (error) {
     console.error('Connect Error:', error);
     res.status(500).json({ error: error.message || 'Failed to connect account.' });
