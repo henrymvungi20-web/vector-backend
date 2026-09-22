@@ -20,11 +20,96 @@ app.use((req, res, next) => {
 const token = process.env.META_API_TOKEN;
 const api = new MetaApi(token);
 
+// In-Memory Database Store for Users & Tiers
+const users = [
+  {
+    id: 'usr_demo_1',
+    fullName: 'Henry Mvungi',
+    email: 'admin@vector.ai',
+    phoneNumber: '+255000000000',
+    country: 'Tanzania',
+    tier: 'vecto2',
+    status: 'active',
+    mt5Connected: true,
+    mt5Locked: true,
+    mt5Account: { login: '101236718', server: 'DerivSVG-Server-02' }
+  }
+];
+
+const findUser = (id) => users.find(u => u.id === id);
+
 app.get('/', (req, res) => {
   res.send('Vector Backend is live');
 });
 
-// Helper: Get or Create MT5 Account
+// ==========================================
+// 1. AUTHENTICATION & SIGN-UP
+// ==========================================
+app.post('/api/auth/signup', (req, res) => {
+  const { fullName, email, phoneNumber, country } = req.body;
+  if (!fullName || !email || !phoneNumber || !country) {
+    return res.status(400).json({ error: 'All fields are required.' });
+  }
+
+  let user = users.find(u => u.email === email);
+  if (!user) {
+    user = {
+      id: `usr_${Date.now()}`,
+      fullName,
+      email,
+      phoneNumber,
+      country,
+      tier: 'free',
+      status: 'active',
+      mt5Connected: false,
+      mt5Locked: false,
+      mt5Account: null
+    };
+    users.push(user);
+  }
+
+  res.json({ success: true, user });
+});
+
+// ==========================================
+// 2. ADMIN ENDPOINTS (Fixes Lovable 404)
+// ==========================================
+app.get('/api/admin/users', (req, res) => {
+  res.json({ success: true, users });
+});
+
+app.post('/api/admin/disconnect-mt5', (req, res) => {
+  const { userId } = req.body;
+  const user = findUser(userId);
+  if (!user) return res.status(404).json({ error: 'User not found.' });
+
+  user.mt5Connected = false;
+  user.mt5Locked = false;
+  user.mt5Account = null;
+
+  res.json({ success: true, message: 'MT5 account unlinked by admin.', user });
+});
+
+app.post('/api/admin/toggle-status', (req, res) => {
+  const { userId, status } = req.body;
+  const user = findUser(userId);
+  if (!user) return res.status(404).json({ error: 'User not found.' });
+
+  user.status = status;
+  res.json({ success: true, user });
+});
+
+app.delete('/api/admin/delete-user/:id', (req, res) => {
+  const index = users.findIndex(u => u.id === req.params.id);
+  if (index === -1) return res.status(404).json({ error: 'User not found.' });
+
+  users.splice(index, 1);
+  res.json({ success: true, message: 'User deleted.' });
+});
+
+// ==========================================
+// 3. MT5 & TRADING ENGINE ENDPOINTS
+// ==========================================
 async function getOrCreateAccount(login, password, server, name) {
   const accountApi = api.metatraderAccountApi;
   const accounts = await accountApi.getAccounts();
@@ -49,7 +134,6 @@ async function getOrCreateAccount(login, password, server, name) {
   return account;
 }
 
-// 1. Connect Account Endpoint
 const handleConnectAccount = async (req, res) => {
   try {
     const { login, password, server, name } = req.body;
@@ -65,7 +149,6 @@ const handleConnectAccount = async (req, res) => {
   }
 };
 
-// 2. Account Information & Balance Endpoint
 const handleGetAccountInfo = async (req, res) => {
   try {
     const accounts = await api.metatraderAccountApi.getAccounts();
@@ -82,12 +165,10 @@ const handleGetAccountInfo = async (req, res) => {
     const info = await connection.getAccountInformation();
     res.json(info);
   } catch (error) {
-    console.error('Account Info Error:', error);
     res.json({ balance: 0, equity: 0, currency: 'USD' });
   }
 };
 
-// 3. Trades & Open Positions Endpoint
 const handleGetTrades = async (req, res) => {
   try {
     const accounts = await api.metatraderAccountApi.getAccounts();
@@ -104,13 +185,11 @@ const handleGetTrades = async (req, res) => {
     const positions = await connection.getPositions();
     res.json({ positions, liveTrades: positions, closedTrades: [] });
   } catch (error) {
-    console.error('Trades Error:', error);
     res.json({ positions: [], liveTrades: [], closedTrades: [] });
   }
 };
 
-// 4. Signals Endpoint (Fixes 404 in Find Signals)
-const handleGetSignals = async (req, res) => {
+const handleGetSignals = (req, res) => {
   const symbol = req.query.symbol || 'XAUUSD';
   res.json({
     success: true,
@@ -124,8 +203,7 @@ const handleGetSignals = async (req, res) => {
   });
 };
 
-// 5. Market Analysis Endpoint (Fixes 404 in Analyze Market)
-const handleGetAnalysis = async (req, res) => {
+const handleGetAnalysis = (req, res) => {
   const symbol = req.query.symbol || 'XAUUSD';
   res.json({
     success: true,
@@ -139,26 +217,18 @@ const handleGetAnalysis = async (req, res) => {
   });
 };
 
-// Endpoints Mapping
+// Route Registrations
 app.post('/api/connect-user', handleConnectAccount);
 app.post('/connect-account', handleConnectAccount);
 
 app.get('/api/account-info', handleGetAccountInfo);
 app.get('/api/account', handleGetAccountInfo);
-app.get('/account', handleGetAccountInfo);
 
 app.get('/api/trades', handleGetTrades);
 app.get('/api/positions', handleGetTrades);
-app.get('/trades', handleGetTrades);
 
 app.get('/api/signals', handleGetSignals);
-app.get('/api/find-signals', handleGetSignals);
-app.get('/signals', handleGetSignals);
-
 app.get('/api/analyze', handleGetAnalysis);
-app.get('/api/analysis', handleGetAnalysis);
-app.get('/api/market-analysis', handleGetAnalysis);
-app.get('/analyze', handleGetAnalysis);
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
