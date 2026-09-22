@@ -120,23 +120,6 @@ app.post('/api/admin/grant-tier', (req, res) => {
   res.json({ success: true, user });
 });
 
-// Admin Disconnect MT5 Route
-app.post('/api/admin/disconnect-mt5', (req, res) => {
-  const { userId, adminEmail } = req.body;
-  if (!adminEmail || adminEmail.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
-    return res.status(403).json({ error: 'Unauthorized.' });
-  }
-
-  const user = users.find(u => u.id === userId);
-  if (!user) return res.status(404).json({ error: 'User not found.' });
-
-  user.mt5Connected = false;
-  user.mt5Locked = false;
-  user.mt5Account = null;
-
-  res.json({ success: true, message: 'MT5 account unlinked successfully.', user });
-});
-
 // ==========================================
 // 3. TRADING & METAAPI ENGINE (Bulletproofed)
 // ==========================================
@@ -280,6 +263,44 @@ app.get('/api/trades', handleGetTrades);
 app.get('/api/positions', handleGetTrades);
 app.get('/api/signals', handleGetSignals);
 app.get('/api/analyze', handleGetAnalysis);
+
+// ==========================================
+// DUAL DISCONNECT MT5 ROUTES (Bulletproofed)
+// ==========================================
+app.post('/api/admin/disconnect-mt5', (req, res) => {
+  const { userId, adminEmail } = req.body;
+  const requesterEmail = adminEmail || req.query.adminEmail || req.headers['x-user-email'];
+  
+  if (!requesterEmail || requesterEmail.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
+    return res.status(403).json({ error: 'Unauthorized.' });
+  }
+
+  const user = users.find(u => u.id === userId);
+  if (!user) return res.status(404).json({ error: 'User not found.' });
+
+  user.mt5Connected = false;
+  user.mt5Locked = false;
+  user.mt5Account = null;
+
+  res.json({ success: true, message: 'MT5 account unlinked successfully.', user });
+});
+
+app.post('/api/admin/disconnect-mt5/:id', (req, res) => {
+  const requesterEmail = req.query.adminEmail || req.headers['x-user-email'] || req.body.adminEmail;
+  
+  if (!requesterEmail || requesterEmail.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
+    return res.status(403).json({ error: 'Unauthorized.' });
+  }
+
+  const user = users.find(u => u.id === req.params.id);
+  if (!user) return res.status(404).json({ error: 'User not found.' });
+
+  user.mt5Connected = false;
+  user.mt5Locked = false;
+  user.mt5Account = null;
+
+  res.json({ success: true, message: 'MT5 account unlinked successfully.', user });
+});
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
