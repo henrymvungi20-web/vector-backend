@@ -19,7 +19,7 @@ app.use((req, res, next) => {
 
 // Initialize MetaApi SDK
 const token = process.env.META_API_TOKEN;
-const api = new MetaApi(token);
+const metaApi = new MetaApi(token);
 
 // Root test route
 app.get('/', (req, res) => {
@@ -35,16 +35,21 @@ const handleConnectAccount = async (req, res) => {
       return res.status(400).json({ error: 'Missing required account credentials (login, password, server).' });
     }
 
-    // Access MetaTrader Account API directly from the SDK instance
-    const metaTraderAccountApi = api.metatraderAccountApi;
+    // Access MetaTrader Account API instance
+    const accountApi = metaApi.metatraderAccountApi;
     
-    // Retrieve accounts array
-    const accounts = await metaTraderAccountApi.getAccounts();
-    let account = accounts.find(a => String(a.login) === String(login) && a.server === server);
+    // Fetch user accounts
+    let account;
+    try {
+      const accounts = await accountApi.getAccounts();
+      account = accounts.find(a => String(a.login) === String(login) && a.server === server);
+    } catch (e) {
+      console.log('Fetching accounts list failed or empty, attempting direct create/get...');
+    }
 
-    // Create account if it doesn't already exist on MetaApi
+    // Create account if not already connected
     if (!account) {
-      account = await metaTraderAccountApi.createAccount({
+      account = await accountApi.createAccount({
         name: name || `MT5-${login}`,
         type: 'cloud',
         login: String(login),
@@ -62,7 +67,7 @@ const handleConnectAccount = async (req, res) => {
   }
 };
 
-// Handle all endpoint variations sent by Lovable
+// Route handlers matching Lovable endpoints
 app.post('/api/connect-user', handleConnectAccount);
 app.post('/connect-account', handleConnectAccount);
 
