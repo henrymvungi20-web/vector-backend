@@ -9,6 +9,7 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
+// Custom CORS Headers
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
@@ -20,9 +21,10 @@ app.use((req, res, next) => {
 const token = process.env.META_API_TOKEN;
 const api = new MetaApi(token);
 
+// Your exact Admin Email
 const ADMIN_EMAIL = 'henrymvungi20@gmail.com'; 
 
-// Database store with accessCodes tracking
+// In-Memory Database store
 const users = [
   {
     id: 'usr_demo_1',
@@ -30,11 +32,12 @@ const users = [
     email: 'henrymvungi20@gmail.com',
     phoneNumber: '+255000000000',
     country: 'Tanzania',
-    tier: 'vecto2',
+    tier: 'vecto2', // 'free', 'vecto1' (Silver), 'vecto2' (Gold)
     status: 'active',
     mt5Connected: true,
     mt5Locked: true,
     mt5Account: { login: '101236718', server: 'DerivSVG-Server-02' },
+    pendingCode: null,
     activeCode: null,
     codeExpiresAt: null
   }
@@ -63,11 +66,12 @@ app.post('/api/auth/signup', (req, res) => {
       email,
       phoneNumber,
       country,
-      tier: 'free',
+      tier: 'free', // Default to free (basic)
       status: 'active',
       mt5Connected: false,
       mt5Locked: false,
       mt5Account: null,
+      pendingCode: null,
       activeCode: null,
       codeExpiresAt: null
     };
@@ -79,7 +83,7 @@ app.post('/api/auth/signup', (req, res) => {
 });
 
 // ==========================================
-// 2. ADMIN CODE GENERATION & USER MANAGEMENT
+// 2. ADMIN ACCESS CODE GENERATION & MANAGEMENT
 // ==========================================
 app.get('/api/admin/users', (req, res) => {
   const requesterEmail = req.query.email || req.headers['x-user-email'];
@@ -89,9 +93,9 @@ app.get('/api/admin/users', (req, res) => {
   res.json({ success: true, users });
 });
 
-// Generate Silver or Gold Code for a User
+// Generate Silver ('vecto1') or Gold ('vecto2') 1-Month Code
 app.post('/api/admin/generate-code', (req, res) => {
-  const { userId, plan, adminEmail } = req.body; // plan: 'vecto1' (Silver) or 'vecto2' (Gold)
+  const { userId, plan, adminEmail } = req.body; 
   if (!adminEmail || adminEmail.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
     return res.status(403).json({ error: 'Unauthorized.' });
   }
@@ -99,39 +103,39 @@ app.post('/api/admin/generate-code', (req, res) => {
   const user = findUser(userId);
   if (!user) return res.status(404).json({ error: 'User not found.' });
 
-  // Generate random 8-character access code
-  const code = `VECTO-${plan.toUpperCase()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+  const planName = plan === 'vecto1' ? 'SILVER' : 'GOLD';
+  const code = `VECTO-${planName}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
   
-  // Set validity (1 month from now for Silver/Vecto 1, or custom)
+  // Valid for 1 Month (30 Days)
   const expiresAt = new Date();
   expiresAt.setMonth(expiresAt.getMonth() + 1);
 
   user.pendingCode = {
     code,
-    plan,
+    plan, // 'vecto1' or 'vecto2'
     expiresAt
   };
 
   res.json({ success: true, code, plan, expiresAt, user });
 });
 
-// User Redeems Access Code
+// User Code Redemption Route
 app.post('/api/auth/redeem-code', (req, res) => {
   const { userId, code } = req.body;
   const user = findUser(userId);
 
   if (!user) return res.status(404).json({ error: 'User not found.' });
 
-  if (!user.pendingCode || user.pendingCode.code !== code) {
-    return res.status(400).json({ error: 'Invalid access code.' });
+  if (!user.pendingCode || user.pendingCode.code !== code.trim()) {
+    return res.status(400).json({ error: 'Invalid or incorrect access code.' });
   }
 
   if (new Date() > new Date(user.pendingCode.expiresAt)) {
     return res.status(400).json({ error: 'This access code has expired.' });
   }
 
-  // Activate Tier
-  user.tier = user.pendingCode.plan; // 'vecto1' or 'vecto2'
+  // Activate Tier & Clear Code
+  user.tier = user.pendingCode.plan; 
   user.activeCode = user.pendingCode.code;
   user.codeExpiresAt = user.pendingCode.expiresAt;
   user.pendingCode = null;
@@ -182,7 +186,7 @@ app.delete('/api/admin/delete-user/:id', (req, res) => {
 });
 
 // ==========================================
-// 3. TRADING & METAAPI ENGINE
+// 3. TRADING & METAAPI ENGINE (Gated for Free Tier)
 // ==========================================
 async function getOrCreateAccount(login, password, server, name) {
   const accountApi = api.metatraderAccountApi;
@@ -213,21 +217,22 @@ const handleConnectAccount = async (req, res) => {
     const { userId, login, password, server, name } = req.body;
     const user = findUser(userId);
 
-    if (user && user.tier === 'free') {
-      return res.status(403).json({ error: 'Please upgrade to Vecto 1 (Silver) or Vecto 2 (Gold) to connect an MT5 account.' });
+    // BLOCK FREE USERS FROM CONNECTING MT5 (Saves MetaApi infrastructure charges)
+    if (!user || user.tier === 'free') {
+      return res.status(403).json({ 
+        error: 'Access denied. Free tier users cannot connect an MT5 account. Please upgrade to Vecto 1 (Silver) or Vecto 2 (Gold).' 
+      });
     }
 
-    if (user && user.mt5Locked) {
+    if (user.mt5Locked) {
       return res.status(403).json({ error: 'MT5 account is permanently locked. Only Admin can disconnect it.' });
     }
 
     const account = await getOrCreateAccount(login, password, server, name);
 
-    if (user) {
-      user.mt5Connected = true;
-      user.mt5Locked = true;
-      user.mt5Account = { login: String(login), server, accountId: account.id };
-    }
+    user.mt5Connected = true;
+    user.mt5Locked = true;
+    user.mt5Account = { login: String(login), server, accountId: account.id };
 
     res.json({ success: true, accountId: account.id, state: account.state, account });
   } catch (error) {
