@@ -35,11 +35,16 @@ const handleConnectAccount = async (req, res) => {
       return res.status(400).json({ error: 'Missing required account credentials.' });
     }
 
-    const accounts = await api.metatraderAccountApi.getAccounts();
-    let account = accounts.find(a => a.login === login && a.server === server);
+    // Access the metatraderAccountApi from the SDK instance
+    const accountApi = api.metatraderAccountApi;
+    
+    // Retrieve existing accounts
+    const accounts = await accountApi.getAccounts();
+    let account = accounts.find(a => a.login === String(login) && a.server === server);
 
+    // Create account if not present
     if (!account) {
-      account = await api.metatraderAccountApi.createAccount({
+      account = await accountApi.createAccount({
         name: name || `MT5-${login}`,
         type: 'cloud',
         login: String(login),
