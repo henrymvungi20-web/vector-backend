@@ -121,34 +121,37 @@ app.post('/api/admin/grant-tier', (req, res) => {
 });
 
 // ==========================================
-// 3. TRADING & METAAPI ENGINE
+// 3. TRADING & METAAPI ENGINE (Bulletproofed)
 // ==========================================
 async function getOrCreateAccount(login, password, server, name) {
   const accountApi = api.metatraderAccountApi;
-  let accounts = [];
+
+  // Safely check pagination if available, avoiding the broken getAccounts() method
   try {
-    if (typeof accountApi.getAccounts === 'function') {
-      accounts = await accountApi.getAccounts();
-    } else if (typeof accountApi.getAccountsWithInfiniteScrollPagination === 'function') {
-      accounts = await accountApi.getAccountsWithInfiniteScrollPagination({ limit: 100 });
+    if (typeof accountApi.getAccountsWithInfiniteScrollPagination === 'function') {
+      const accounts = await accountApi.getAccountsWithInfiniteScrollPagination({ limit: 100 });
+      let existing = accounts.find(a => String(a.login) === String(login) && a.server === server);
+      if (existing) {
+        if (existing.state !== 'DEPLOYED') {
+          await existing.deploy();
+        }
+        return existing;
+      }
     }
   } catch (e) {
-    console.log('Account fetch warning:', e.message);
+    console.log('Pagination lookup notice:', e.message);
   }
 
-  let account = accounts.find(a => String(a.login) === String(login) && a.server === server);
-
-  if (!account) {
-    account = await accountApi.createAccount({
-      name: name || `MT5-${login}`,
-      type: 'cloud',
-      login: String(login),
-      password: password,
-      server: server,
-      platform: 'mt5',
-      magic: 1000
-    });
-  }
+  // Create the account directly if not found via pagination
+  const account = await accountApi.createAccount({
+    name: name || `MT5-${login}`,
+    type: 'cloud',
+    login: String(login),
+    password: password,
+    server: server,
+    platform: 'mt5',
+    magic: 1000
+  });
 
   if (account.state !== 'DEPLOYED') {
     await account.deploy();
@@ -168,7 +171,6 @@ const handleConnectAccount = async (req, res) => {
     user.mt5Locked = true;
     user.mt5Account = { login: String(login), server, accountId: account.id };
 
-    // FIX: Return clean primitives instead of the circular 'account' class instance
     res.json({ 
       success: true, 
       accountId: account.id, 
@@ -183,8 +185,11 @@ const handleConnectAccount = async (req, res) => {
 
 const handleGetAccountInfo = async (req, res) => {
   try {
-    const accounts = await api.metatraderAccountApi.getAccounts();
-    const account = accounts.find(a => a.state === 'DEPLOYED') || accounts[0];
+    let account = null;
+    if (typeof api.metatraderAccountApi.getAccountsWithInfiniteScrollPagination === 'function') {
+      const accounts = await api.metatraderAccountApi.getAccountsWithInfiniteScrollPagination({ limit: 10 });
+      account = accounts.find(a => a.state === 'DEPLOYED') || accounts[0];
+    }
 
     if (!account) {
       return res.json({ balance: 0, equity: 0, currency: 'USD', state: 'DISCONNECTED' });
@@ -203,8 +208,11 @@ const handleGetAccountInfo = async (req, res) => {
 
 const handleGetTrades = async (req, res) => {
   try {
-    const accounts = await api.metatraderAccountApi.getAccounts();
-    const account = accounts.find(a => a.state === 'DEPLOYED') || accounts[0];
+    let account = null;
+    if (typeof api.metatraderAccountApi.getAccountsWithInfiniteScrollPagination === 'function') {
+      const accounts = await api.metatraderAccountApi.getAccountsWithInfiniteScrollPagination({ limit: 10 });
+      account = accounts.find(a => a.state === 'DEPLOYED') || accounts[0];
+    }
 
     if (!account) {
       return res.json({ positions: [], liveTrades: [], closedTrades: [] });
